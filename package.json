@@ -37,7 +37,7 @@
     "build": "bun run build:spa && bun run build:spa:copy && bun run build:next",
     "build:analyze": "cross-env NODE_OPTIONS=--max-old-space-size=81920 next experimental-analyze",
     "build:docker": "pnpm run build:spa && pnpm run build:spa:mobile && pnpm run build:spa:copy && cross-env NODE_OPTIONS=--max-old-space-size=8192 DOCKER=true next build && pnpm run build-sitemap",
-    "build:next": "cross-env NODE_OPTIONS=--max-old-space-size=7168 bun run build:next:raw",
+    "build:next": "cross-env NODE_OPTIONS=--max-old-space-size=6500 bun run build:next:raw",
     "build:next:raw": "next build",
     "build:raw": "bun run build:spa:raw && bun run build:spa:copy && bun run build:next:raw",
     "build:spa": "cross-env NODE_OPTIONS=--max-old-space-size=6500 pnpm run build:spa:raw",
