@@ -6,8 +6,12 @@ import { getServerDB } from '@/database/core/db-adaptor';
 import { AgentBotProviderModel } from '@/database/models/agentBotProvider';
 import { getAgentRuntimeRedisClient } from '@/server/modules/AgentRuntime/redis';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
-import type { BotPlatformRuntimeContext, BotProviderConfig } from '@/server/services/bot/platforms';
-import { getEffectiveConnectionMode, platformRegistry } from '@/server/services/bot/platforms';
+import type { BotPlatformRuntimeContext } from '@/server/services/bot/platforms';
+import {
+  platformRegistry,
+  resolveBotProviderConfig,
+  resolveConnectionMode,
+} from '@/server/services/bot/platforms';
 import { BotConnectQueue } from '@/server/services/gateway/botConnectQueue';
 
 const log = debug('lobe-server:bot:gateway:cron');
@@ -37,12 +41,16 @@ function createGatewayBot(
   credentials: Record<string, string>,
   settings: Record<string, unknown> | null | undefined,
 ) {
-  const config: BotProviderConfig = {
+  const definition = platformRegistry.getPlatform(platform);
+  if (!definition) {
+    throw new Error(`Unsupported platform: ${platform}`);
+  }
+
+  const { config } = resolveBotProviderConfig(definition, {
     applicationId,
     credentials,
-    platform,
-    settings: (settings as Record<string, unknown>) || {},
-  };
+    settings,
+  });
 
   return platformRegistry.createClient(platform, config, createRuntimeContext());
 }
@@ -77,7 +85,7 @@ async function processConnectQueue(remainingMs: number): Promise<number> {
         continue;
       }
 
-      const effectiveMode = getEffectiveConnectionMode(definition, provider.settings);
+      const effectiveMode = resolveConnectionMode(definition, provider.settings);
       if (effectiveMode === 'webhook') {
         log(
           'Skipping queued webhook-mode provider platform=%s appId=%s',
@@ -123,6 +131,17 @@ export async function GET(request: NextRequest) {
     return new Response('Unauthorized', { status: 401 });
   }
 
+  // When the external message gateway is enabled, sync connections via gateway.
+  if (process.env.MESSAGE_GATEWAY_URL && process.env.MESSAGE_GATEWAY_SERVICE_TOKEN) {
+    const { GatewayService } = await import('@/server/services/gateway');
+    const service = new GatewayService();
+
+    if (service.useMessageGateway) {
+      await service.ensureRunning();
+      return Response.json({ ensureRunning: true });
+    }
+  }
+
   const platforms = platformRegistry.listPlatforms();
 
   const serverDB = await getServerDB();
@@ -149,7 +168,7 @@ export async function GET(request: NextRequest) {
 
       // Per-provider mode overrides the platform default. Webhook providers
       // never need a persistent listener even if the platform default is gateway.
-      const effectiveMode = getEffectiveConnectionMode(platform, settings);
+      const effectiveMode = resolveConnectionMode(platform, settings);
       if (effectiveMode === 'webhook') {
         log('Skipping webhook-mode provider platform=%s appId=%s', platform.id, applicationId);
         continue;

@@ -68,6 +68,8 @@ export default {
   'channel.wechatQrWait': 'Open WeChat and scan the QR code to connect.',
   'channel.wechatBotId': 'Bot ID',
   'channel.wechatConnectedInfo': 'Connected WeChat Account',
+  'channel.wechatIdleNotice':
+    'If no users send messages for over 7 days, this connection will be automatically paused. To resume, click "Rebind via QR Code".',
   'channel.wechatManagedCredentials':
     'This channel is already connected through QR code authorization. Credentials are managed automatically.',
   'channel.wechatRebind': 'Rebind via QR Code',
@@ -112,7 +114,7 @@ export default {
     'The App Secret of your bot application. It will be encrypted and stored securely.',
   'channel.connectionMode': 'Connection Mode',
   'channel.connectionModeHint':
-    'WebSocket is recommended for new bots. Use Webhook if your bot already has a callback URL configured on QQ Open Platform.',
+    'WebSocket is recommended for new bots. Use Webhook if your bot already has a callback URL configured.',
   'channel.connectionModeWebSocket': 'WebSocket',
   'channel.connectionModeWebhook': 'Webhook',
   'channel.charLimit': 'Character Limit',
@@ -152,5 +154,12 @@ export default {
   'channel.userId': 'Your Platform User ID',
   'channel.userIdHint':
     'Your user ID on this platform. The AI can use it to send you direct messages.',
+  'channel.refreshStatus': 'Refresh status',
   'channel.runtimeDisconnected': 'Bot disconnected',
+  'channel.statusConnected': 'Connected',
+  'channel.statusDisconnected': 'Disconnected',
+  'channel.statusDormant': 'Dormant',
+  'channel.statusFailed': 'Failed',
+  'channel.statusQueued': 'Queued',
+  'channel.statusStarting': 'Starting',
 } as const;

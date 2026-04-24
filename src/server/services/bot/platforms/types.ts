@@ -6,6 +6,16 @@ import type { AttachmentSource } from '@/server/services/aiAgent/ingestAttachmen
 // Bot Platform Core Types
 // ============================================================================
 
+/**
+ * Extended return type for `extractFiles` that carries optional warnings
+ * (e.g. "file too large") alongside extracted files. Warnings are appended
+ * to the agent prompt so the AI can inform the user naturally.
+ */
+export interface ExtractFilesResult {
+  files?: AttachmentSource[];
+  warnings?: string[];
+}
+
 // --------------- Connection Mode ---------------
 
 /**
@@ -67,10 +77,34 @@ export interface FieldSchema {
  * LobeHub-specific outbound capabilities used by callback and bridge services.
  */
 export interface PlatformMessenger {
+  /**
+   * Add a reaction to a message (optional — platforms without reaction APIs
+   * can omit this). Callers must no-op on platforms that don't implement it.
+   */
+  addReaction?: (messageId: string, emoji: string) => Promise<void>;
   createMessage: (content: string) => Promise<void>;
   editMessage: (messageId: string, content: string) => Promise<void>;
   removeReaction: (messageId: string, emoji: string) => Promise<void>;
-  triggerTyping: () => Promise<void>;
+  /**
+   * Transition the bot's reaction on a message from `prevEmoji` to
+   * `nextEmoji`. Either can be `null`: `prev=null` means "nothing was there,
+   * just add", `next=null` means "clear it". Each platform implements this
+   * with the fewest API calls it can:
+   *
+   * - Telegram: single `setMessageReaction` (atomic replace).
+   * - Discord / Slack / Feishu: `addReaction(next)` then `removeReaction(prev)`
+   *   in that order so the user always sees at least one bot reaction during
+   *   the transition.
+   *
+   * Optional — platforms with no reaction API (QQ, WeChat) omit it, and
+   * callers must guard with optional chaining.
+   */
+  replaceReaction?: (
+    messageId: string,
+    prevEmoji: string | null,
+    nextEmoji: string | null,
+  ) => Promise<void>;
+  triggerTyping?: () => Promise<void>;
   updateThreadName?: (name: string) => Promise<void>;
 }
 
@@ -122,7 +156,7 @@ export interface PlatformClient {
    * `extractFiles` implementation. Eventually all platforms will implement
    * this and the bridge fallback will be deleted.
    */
-  extractFiles?: (message: Message) => Promise<AttachmentSource[] | undefined>;
+  extractFiles?: (message: Message) => Promise<AttachmentSource[] | ExtractFilesResult | undefined>;
 
   /**
    * Transform outbound Markdown content into a format the platform can render.
@@ -287,14 +321,10 @@ export interface PlatformDefinition {
    * - 'polling': persistent long-polling connection (e.g. WeChat)
    *
    * For single-mode platforms this is the runtime mode. For multi-mode
-   * platforms where users can pick per-provider via `settings.connectionMode`,
-   * this represents the *recommended* default for new providers (form initial
-   * value + cron coarse filter).
-   *
-   * For platforms that added multi-mode support after launch (Slack/Feishu/
-   * Lark/QQ), legacy provider rows without an explicit setting fall back to
-   * `'webhook'` instead — see `LEGACY_WEBHOOK_PLATFORMS` and
-   * `getEffectiveConnectionMode` in `./utils.ts`.
+   * platforms where users pick per-provider via `settings.connectionMode`,
+   * this is the runtime fallback when settings have no explicit value (after
+   * schema defaults have been merged in). See `getEffectiveConnectionMode`
+   * in `./utils.ts`.
    */
   connectionMode: ConnectionMode;
 

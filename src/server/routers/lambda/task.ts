@@ -1,11 +1,18 @@
 import { TaskIdentifier as TaskSkillIdentifier } from '@lobechat/builtin-skills';
 import { BriefIdentifier } from '@lobechat/builtin-tool-brief';
 import { NotebookIdentifier } from '@lobechat/builtin-tool-notebook';
+import { TASK_STATUSES } from '@lobechat/builtin-tool-task';
 import { buildTaskRunPrompt } from '@lobechat/prompts';
-import type { TaskTopicHandoff, WorkspaceData } from '@lobechat/types';
+import type {
+  TaskListItem,
+  TaskParticipant,
+  TaskTopicHandoff,
+  WorkspaceData,
+} from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
+import { AgentModel } from '@/database/models/agent';
 import { BriefModel } from '@/database/models/brief';
 import { TaskModel } from '@/database/models/task';
 import { TaskTopicModel } from '@/database/models/taskTopic';
@@ -21,6 +28,7 @@ const taskProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
   return opts.next({
     ctx: {
+      agentModel: new AgentModel(ctx.serverDB, ctx.userId),
       briefModel: new BriefModel(ctx.serverDB, ctx.userId),
       taskLifecycle: new TaskLifecycleService(ctx.serverDB, ctx.userId),
       taskModel: new TaskModel(ctx.serverDB, ctx.userId),
@@ -39,6 +47,7 @@ const idInput = z.object({ id: z.string() });
 const createSchema = z.object({
   assigneeAgentId: z.string().optional(),
   assigneeUserId: z.string().optional(),
+  createdByAgentId: z.string().optional(),
   description: z.string().optional(),
   identifierPrefix: z.string().optional(),
   instruction: z.string().min(1),
@@ -50,10 +59,11 @@ const createSchema = z.object({
 const updateSchema = z.object({
   assigneeAgentId: z.string().nullable().optional(),
   assigneeUserId: z.string().nullable().optional(),
+  automationMode: z.enum(['heartbeat', 'schedule']).nullable().optional(),
   config: z.record(z.unknown()).optional(),
   context: z.record(z.unknown()).optional(),
   description: z.string().optional(),
-  heartbeatInterval: z.number().min(1).optional(),
+  heartbeatInterval: z.number().min(0).optional(),
   heartbeatTimeout: z.number().min(1).nullable().optional(),
   instruction: z.string().optional(),
   name: z.string().optional(),
@@ -64,8 +74,10 @@ const listSchema = z.object({
   assigneeAgentId: z.string().optional(),
   limit: z.number().min(1).max(100).default(50),
   offset: z.number().min(0).default(0),
+  parentIdentifier: z.string().optional(),
   parentTaskId: z.string().nullable().optional(),
-  status: z.string().optional(),
+  priorities: z.array(z.number().min(0).max(4)).max(5).optional(),
+  statuses: z.array(z.enum(TASK_STATUSES)).max(10).optional(),
 });
 
 const groupListSchema = z.object({
@@ -355,6 +367,46 @@ export const taskRouter = router({
       }
     }),
 
+  deleteComment: taskProcedure
+    .input(z.object({ commentId: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      try {
+        const deleted = await ctx.taskModel.deleteComment(input.commentId);
+        if (!deleted) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Comment not found' });
+        }
+        return { message: 'Comment deleted', success: true };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        console.error('[task:deleteComment]', error);
+        throw new TRPCError({
+          cause: error,
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to delete comment',
+        });
+      }
+    }),
+
+  updateComment: taskProcedure
+    .input(z.object({ commentId: z.string(), content: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      try {
+        const comment = await ctx.taskModel.updateComment(input.commentId, input.content);
+        if (!comment) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Comment not found' });
+        }
+        return { data: comment, message: 'Comment updated', success: true };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        console.error('[task:updateComment]', error);
+        throw new TRPCError({
+          cause: error,
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to update comment',
+        });
+      }
+    }),
+
   addDependency: taskProcedure
     .input(
       z.object({
@@ -462,10 +514,11 @@ export const taskRouter = router({
     } catch (error) {
       if (error instanceof TRPCError) throw error;
       console.error('[task:create]', error);
+      const causeMessage = error instanceof Error ? error.message : String(error);
       throw new TRPCError({
         cause: error,
         code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to create task',
+        message: causeMessage ? `Failed to create task: ${causeMessage}` : 'Failed to create task',
       });
     }
   }),
@@ -490,7 +543,7 @@ export const taskRouter = router({
       const model = ctx.taskModel;
       const task = await resolveOrThrow(model, input.id);
       await model.delete(task.id);
-      return { message: 'Task deleted', success: true };
+      return { data: task, message: 'Task deleted', success: true };
     } catch (error) {
       if (error instanceof TRPCError) throw error;
       console.error('[task:delete]', error);
@@ -504,25 +557,7 @@ export const taskRouter = router({
 
   detail: taskProcedure.input(idInput).query(async ({ input, ctx }) => {
     try {
-      const model = ctx.taskModel;
-      let task = await resolveOrThrow(model, input.id);
-
-      // Auto-detect heartbeat timeout for running tasks
-      if (task.status === 'running' && task.heartbeatTimeout && task.lastHeartbeatAt) {
-        const elapsed = (Date.now() - new Date(task.lastHeartbeatAt).getTime()) / 1000;
-        if (elapsed > task.heartbeatTimeout) {
-          await model.updateStatus(task.id, 'paused', { error: 'Heartbeat timeout' });
-          await ctx.taskTopicModel.timeoutRunning(task.id);
-          task = await resolveOrThrow(model, input.id);
-        }
-      }
-
-      // Clear stale heartbeat timeout error if task is no longer running
-      if (task.status !== 'running' && task.error === 'Heartbeat timeout') {
-        await model.update(task.id, { error: null });
-      }
-
-      const detail = await ctx.taskService.getTaskDetail(task.identifier);
+      const detail = await ctx.taskService.getTaskDetail(input.id);
       if (!detail) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
@@ -720,9 +755,53 @@ export const taskRouter = router({
   list: taskProcedure.input(listSchema).query(async ({ input, ctx }) => {
     try {
       const model = ctx.taskModel;
-      const result = await model.list(input);
-      return { data: result.tasks, success: true, total: result.total };
+      const { parentIdentifier, ...query } = input;
+      let parentTaskId = query.parentTaskId;
+
+      if (parentIdentifier) {
+        const parent = await model.resolve(parentIdentifier);
+        if (!parent) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: `Parent task not found: ${parentIdentifier}`,
+          });
+        }
+
+        parentTaskId = parent.id;
+      }
+
+      const result = await model.list({
+        ...query,
+        parentTaskId,
+      });
+
+      const assigneeIds = [
+        ...new Set(result.tasks.map((t) => t.assigneeAgentId).filter((id): id is string => !!id)),
+      ];
+      const agents =
+        assigneeIds.length > 0 ? await ctx.agentModel.getAgentAvatarsByIds(assigneeIds) : [];
+      const agentMap = new Map(agents.map((a) => [a.id, a]));
+
+      const data: TaskListItem[] = result.tasks.map((task) => {
+        const participants: TaskParticipant[] = [];
+        if (task.assigneeAgentId) {
+          const agent = agentMap.get(task.assigneeAgentId);
+          if (agent) {
+            participants.push({
+              avatar: agent.avatar,
+              backgroundColor: agent.backgroundColor,
+              id: agent.id,
+              title: agent.title ?? '',
+              type: 'agent',
+            });
+          }
+        }
+        return { ...task, participants };
+      });
+
+      return { data, success: true, total: result.total };
     } catch (error) {
+      if (error instanceof TRPCError) throw error;
       console.error('[task:list]', error);
       throw new TRPCError({
         cause: error,
@@ -1224,14 +1303,46 @@ export const taskRouter = router({
       z.object({
         error: z.string().optional(),
         id: z.string(),
-        status: z.enum(['backlog', 'running', 'paused', 'completed', 'failed', 'canceled']),
+        status: z.enum(TASK_STATUSES),
       }),
     )
     .mutation(async ({ input, ctx }) => {
       const { id, status, error: errorMsg } = input;
       try {
+        if (errorMsg && status !== 'failed') {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Task error can only be provided when status is failed.',
+          });
+        }
+
         const model = ctx.taskModel;
         const resolved = await resolveOrThrow(model, id);
+
+        // Cascade: when leaving `running`, cancel all running topics
+        if (resolved.status === 'running' && status !== 'running') {
+          const topics = await ctx.taskTopicModel.findByTaskId(resolved.id);
+          const aiAgentService = new AiAgentService(ctx.serverDB, ctx.userId);
+
+          for (const t of topics) {
+            if (t.status !== 'running' || !t.topicId) continue;
+
+            // Interrupt the remote operation first; if it fails, skip cancellation
+            // to avoid desynchronizing DB state from a still-running operation.
+            if (t.operationId) {
+              try {
+                await aiAgentService.interruptTask({ operationId: t.operationId });
+              } catch (err) {
+                console.error('[task:updateStatus] failed to interrupt topic %s:', t.topicId, err);
+                continue;
+              }
+            }
+
+            // Conditionally cancel only if the topic is still running,
+            // avoiding overwrite of a concurrent completed/timeout transition.
+            await ctx.taskTopicModel.cancelIfRunning(resolved.id, t.topicId);
+          }
+        }
 
         const extra: Record<string, unknown> = {};
         if (status === 'running') extra.startedAt = new Date();

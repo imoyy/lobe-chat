@@ -1,13 +1,16 @@
-import type { ConversationContext } from '@lobechat/types';
-
 import type {
   AgentStreamEvent,
   StepCompleteData,
   StreamChunkData,
   StreamStartData,
-} from '@/libs/agent-stream';
+  ToolExecuteData,
+} from '@lobechat/agent-gateway-client';
+import type { ChatMessageError, ConversationContext } from '@lobechat/types';
+import { AgentRuntimeErrorType } from '@lobechat/types';
+
 import { messageService } from '@/services/message';
 import type { ChatStore } from '@/store/chat/store';
+import { notifyDesktopHumanApprovalRequired } from '@/store/chat/utils/desktopNotification';
 
 /**
  * Fetch messages from DB and replace them in the chat store's dbMessagesMap.
@@ -17,6 +20,29 @@ import type { ChatStore } from '@/store/chat/store';
 const fetchAndReplaceMessages = async (get: () => ChatStore, context: ConversationContext) => {
   const messages = await messageService.getMessages(context);
   get().replaceMessages(messages, { context });
+};
+
+const toChatMessageError = (data: unknown): ChatMessageError => {
+  if (typeof data === 'object' && data && 'type' in data && typeof data.type === 'string') {
+    const error = data as ChatMessageError;
+    return {
+      ...error,
+      message: error.message || error.body?.message,
+    };
+  }
+
+  const message =
+    typeof data === 'object' && data && 'message' in data && typeof data.message === 'string'
+      ? data.message
+      : typeof data === 'object' && data && 'error' in data && typeof data.error === 'string'
+        ? data.error
+        : 'Unknown error';
+
+  return {
+    body: { message },
+    message,
+    type: AgentRuntimeErrorType.AgentRuntimeError,
+  };
 };
 
 /**
@@ -37,16 +63,24 @@ export const createGatewayEventHandler = (
   params: {
     assistantMessageId: string;
     context: ConversationContext;
+    /**
+     * Server-side operation id — used to look up the `AgentStreamClient` in
+     * `gatewayConnections` so we can `sendToolResult` back over the same WS.
+     * Defaults to `operationId` when the caller does not distinguish the two.
+     */
+    gatewayOperationId?: string;
     operationId: string;
   },
 ) => {
   const { context, operationId } = params;
+  const gatewayOperationId = params.gatewayOperationId ?? operationId;
 
   // Dispatch context — ensures internal_dispatchMessage resolves the correct messageMapKey
   const dispatchContext = { operationId };
 
   // Mutable — switches to new assistant message ID on each stream_start
   let currentAssistantMessageId = params.assistantMessageId;
+  let terminalState: 'completed' | 'error' | undefined;
 
   // Accumulated content from stream chunks (reset on each stream_start)
   let accumulatedContent = '';
@@ -60,6 +94,12 @@ export const createGatewayEventHandler = (
   };
 
   return (event: AgentStreamEvent) => {
+    if (terminalState) return;
+
+    if (event.type === 'agent_runtime_end' || event.type === 'error') {
+      terminalState = event.type === 'error' ? 'error' : 'completed';
+    }
+
     switch (event.type) {
       case 'stream_start': {
         enqueue(async () => {
@@ -128,6 +168,15 @@ export const createGatewayEventHandler = (
               currentAssistantMessageId,
               data.toolsCalling.map(() => true),
             );
+
+            // If the server attached a `toolMessageIds` map, it has persisted
+            // pending tool messages (human approval path). Fetch the latest
+            // messages so ApprovalActions can read them by id instead of
+            // waiting for `agent_runtime_end` (which won't fire while paused
+            // in `waiting_for_human`).
+            if ((data as any).toolMessageIds) {
+              fetchAndReplaceMessages(get, context).catch(console.error);
+            }
           }
         });
         break;
@@ -146,6 +195,35 @@ export const createGatewayEventHandler = (
       case 'tool_start': {
         // Server creates tool messages in DB.
         // Loading is already active from stream_start (not cleared by stream_end).
+        break;
+      }
+
+      case 'step_start': {
+        const data = event.data as {
+          pendingToolsCalling?: unknown[];
+          phase?: string;
+          requiresApproval?: boolean;
+        };
+
+        if (data?.phase === 'human_approval' && data.requiresApproval && data.pendingToolsCalling) {
+          void notifyDesktopHumanApprovalRequired(get, context);
+        }
+
+        break;
+      }
+
+      case 'tool_execute': {
+        // Fire-and-forget: the client-side tool may take a long time, and we
+        // must keep processing other events (stream_chunk, tool_end, etc.) on
+        // the same WebSocket. `internal_executeClientTool` guarantees it never
+        // throws and always sends exactly one `tool_result` back.
+        //
+        // Use `gatewayOperationId` (server-side id, the key under
+        // `gatewayConnections`) so the action can look up the WS to reply on
+        // — NOT the local `operationId` used for `dispatchContext`.
+        const data = event.data as ToolExecuteData | undefined;
+        if (!data) break;
+        void get().internal_executeClientTool(data, { operationId: gatewayOperationId });
         break;
       }
 
@@ -172,20 +250,49 @@ export const createGatewayEventHandler = (
         enqueue(async () => {
           get().internal_toggleToolCallingStreaming(currentAssistantMessageId, undefined);
           get().completeOperation(operationId);
+
+          const completedOp = get().operations[operationId];
+          if (completedOp?.context.agentId) {
+            get().markUnreadCompleted(completedOp.context.agentId, completedOp.context.topicId);
+          }
+
           await fetchAndReplaceMessages(get, context).catch(console.error);
         });
         break;
       }
 
       case 'error': {
-        enqueue(() => {
-          const errorMsg = event.data?.message || event.data?.error || 'Unknown error';
+        enqueue(async () => {
+          const messageError = toChatMessageError(event.data);
+
+          get().internal_toggleToolCallingStreaming(currentAssistantMessageId, undefined);
+          get().completeOperation(operationId);
+
+          const updateResult = await messageService
+            .updateMessageError(currentAssistantMessageId, messageError, {
+              agentId: context.agentId,
+              groupId: context.groupId,
+              threadId: context.threadId,
+              topicId: context.topicId,
+            })
+            .catch(console.error);
+
+          if (updateResult?.success && updateResult.messages) {
+            get().replaceMessages(updateResult.messages, { context });
+          } else {
+            // Fallback when the mutation response doesn't include messages.
+            await fetchAndReplaceMessages(get, context).catch(console.error);
+          }
+
+          // Then overlay the inline error. This ensures the UI always shows the
+          // error even if the server hasn't persisted it into the message yet
+          // (the DB fetch would have returned a message with no error field).
           get().internal_dispatchMessage(
             {
               id: currentAssistantMessageId,
               type: 'updateMessage',
               value: {
-                error: { body: { message: errorMsg }, type: 'AgentRuntimeError' },
+                error: messageError,
               },
             },
             dispatchContext,
