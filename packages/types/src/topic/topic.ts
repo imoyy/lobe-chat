@@ -31,6 +31,15 @@ export interface TopicUserMemoryExtractRunState {
 
 export interface ChatTopicBotContext {
   applicationId: string;
+  /**
+   * Set when the run originated from the shared Messenger bot (Telegram global
+   * token, Slack per-workspace install, Discord global token). The value is
+   * the messenger installation key (`<platform>:<tenantId>` or
+   * `<platform>:singleton`) — `BotCallbackService` uses its presence as the
+   * deterministic switch to resolve credentials via the messenger install
+   * store instead of `agent_bot_providers`.
+   */
+  messengerInstallationKey?: string;
   platform: string;
   platformThreadId: string;
 }
@@ -72,6 +81,14 @@ export interface ChatTopicMetadata {
    * Cron job ID that triggered this topic creation (if created by scheduled task)
    */
   cronJobId?: string;
+  /**
+   * Scoped pointer to the currently active assistant message for a running
+   * heterogeneous agent operation. Includes `operationId` so cold-start
+   * replicas only use the value when it belongs to the current operation —
+   * preventing a stale pointer from a previous run from corrupting a new one.
+   * Updated on every step boundary.
+   */
+  heteroCurrentMsgId?: { msgId: string; operationId: string };
   /**
    * Persistent session id for a heterogeneous agent.
    * Saved after each turn so the next message in the same topic can resume
