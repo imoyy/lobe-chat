@@ -139,6 +139,10 @@ vi.mock('@/server/services/toolExecution/deviceProxy', () => ({
   },
 }));
 
+vi.mock('@/server/modules/ModelRuntime', () => ({
+  initModelRuntimeFromDB: vi.fn(),
+}));
+
 vi.mock('model-bank', async (importOriginal) => {
   const actual = await importOriginal<typeof ModelBankModule>();
   return {
@@ -239,6 +243,7 @@ describe('AiAgentService.execAgent - file upload handling', () => {
 
       expect(lastMessage).toMatchObject({
         content: 'Describe this screenshot',
+        id: 'msg-1',
         role: 'user',
       });
       expect(lastMessage.imageList).toEqual([

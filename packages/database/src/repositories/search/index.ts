@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 
 import {
   agents,
@@ -66,6 +66,11 @@ export interface ChatGroupSearchResult extends BaseSearchResult {
 }
 
 export interface TopicSearchResult extends BaseSearchResult {
+  agent: {
+    avatar: string | null;
+    backgroundColor: string | null;
+    title: string | null;
+  } | null;
   agentId: string | null;
   favorite: boolean | null;
   sessionId: string | null;
@@ -126,6 +131,20 @@ export interface PluginSearchResult extends BaseSearchResult {
 export interface KnowledgeBaseSearchResult extends BaseSearchResult {
   avatar: string | null;
   type: 'knowledgeBase';
+}
+
+/**
+ * BM25 hit for KB-scoped documents (custom/document) used by chunkRouter.semanticSearchForChat.
+ * Distinct from PageSearchResult — this carries snippet + KB id for agent tool consumption.
+ * `relevance` is normalized to [1, 3] (lower = better, matches BaseSearchResult semantics).
+ */
+export interface KnowledgeBaseDocumentHit {
+  documentId: string;
+  knowledgeBaseId: string;
+  relevance: number;
+  snippet: string;
+  title: string;
+  updatedAt: Date;
 }
 
 export interface AssistantSearchResult extends BaseSearchResult {
@@ -405,7 +424,16 @@ export class SearchRepo {
 
     const rows = await this.db
       .select({
+        // agents.id is selected as a sentinel: non-null only when the JOIN
+        // matched an agent owned by this user. Topics carrying an agentId
+        // that points to another user's agent (possible via migrated/crafted
+        // data) yield null here, so the renderer falls back to the
+        // agent-less subtitle and never surfaces foreign metadata.
+        agentAvatar: agents.avatar,
+        agentBackgroundColor: agents.backgroundColor,
         agentId: topics.agentId,
+        agentMatchedId: agents.id,
+        agentTitle: agents.title,
         content: topics.content,
         createdAt: topics.createdAt,
         favorite: topics.favorite,
@@ -416,6 +444,7 @@ export class SearchRepo {
         updatedAt: topics.updatedAt,
       })
       .from(topics)
+      .leftJoin(agents, and(eq(topics.agentId, agents.id), eq(agents.userId, this.userId)))
       .where(
         and(
           eq(topics.userId, this.userId),
@@ -427,6 +456,13 @@ export class SearchRepo {
       .limit(limit);
 
     return this.mapScoresToRelevance(rows).map((row) => ({
+      agent: row.agentMatchedId
+        ? {
+            avatar: row.agentAvatar,
+            backgroundColor: row.agentBackgroundColor,
+            title: row.agentTitle,
+          }
+        : null,
       agentId: row.agentId,
       createdAt: row.createdAt,
       description: this.truncate(row.content),
@@ -625,6 +661,53 @@ export class SearchRepo {
         updatedAt: row.updatedAt,
       };
     });
+  }
+
+  /**
+   * KB-scoped BM25 search over custom/document documents.
+   * Used by chunkRouter.semanticSearchForChat to surface inline documents
+   * to the KB agent tool's searchKnowledgeBase API.
+   */
+  async searchKnowledgeBaseDocuments(
+    query: string,
+    knowledgeBaseIds: string[],
+    limit: number = 20,
+  ): Promise<KnowledgeBaseDocumentHit[]> {
+    if (!query || query.trim() === '') return [];
+    if (!knowledgeBaseIds || knowledgeBaseIds.length === 0) return [];
+
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        content: documents.content,
+        filename: documents.filename,
+        id: documents.id,
+        knowledgeBaseId: documents.knowledgeBaseId,
+        score: sql<number>`paradedb.score(${documents.id})`,
+        title: documents.title,
+        updatedAt: documents.updatedAt,
+      })
+      .from(documents)
+      .where(
+        and(
+          eq(documents.userId, this.userId),
+          eq(documents.fileType, 'custom/document'),
+          inArray(documents.knowledgeBaseId, knowledgeBaseIds),
+          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.content} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${documents.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => ({
+      documentId: row.id,
+      knowledgeBaseId: row.knowledgeBaseId ?? '',
+      relevance: row.relevance,
+      snippet: this.truncate(row.content, 300) ?? '',
+      title: row.title || row.filename || 'Untitled',
+      updatedAt: row.updatedAt,
+    }));
   }
 
   /**

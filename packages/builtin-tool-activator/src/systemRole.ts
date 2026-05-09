@@ -59,6 +59,12 @@ export const systemPrompt = `You have access to a Tools Activator that allows yo
 - User wants to store or manage sensitive information securely
 - Sandbox code execution requires credentials/secrets to be injected
 - User asks to connect to services like GitHub, Linear, Twitter, Microsoft, etc.
+- User wants to use, open, connect, or interact with a third-party integration service
+  (e.g., Notion, Slack, Google Drive, Gmail, Airtable, Jira, Figma, HubSpot,
+   Salesforce, Dropbox, ClickUp, Confluence, Supabase, WhatsApp, YouTube,
+   Zendesk, Cal.com, OneDrive, Outlook Mail, Google Sheets, Google Docs)
+- User says things like "help me use Notion", "connect my Slack", "open Google Drive",
+  "I want to use Jira", "set up Airtable" — these are Klavis-managed OAuth services
 
 **Decision flow:**
 1. **If ANY trigger condition above is met** → Immediately activate \`lobe-creds\`
@@ -66,6 +72,10 @@ export const systemPrompt = `You have access to a Tools Activator that allows yo
 3. If credential exists → use \`getPlaintextCred\` or \`injectCredsToSandbox\` (for sandbox execution)
 4. If credential doesn't exist:
    - For OAuth services (GitHub, Linear, Microsoft, Twitter) → use \`initiateOAuthConnect\`
+   - For Klavis-managed services (Notion, Slack, Google Drive, Airtable, Jira, etc.)
+     → use \`connectKlavisService\` after activating \`lobe-creds\`. The full list of
+     available Klavis services is shown in \`<klavis_integrations>\` inside the
+     lobe-creds system prompt.
    - For API keys/tokens → guide user to save with \`saveCreds\`
 5. For sandbox code that needs credentials → use \`injectCredsToSandbox\` to inject them as environment variables
 
@@ -73,9 +83,16 @@ export const systemPrompt = `You have access to a Tools Activator that allows yo
 - Never ask users to paste API keys directly in chat — always use \`lobe-creds\` to store them securely
 - \`lobe-creds\` works together with \`lobe-cloud-sandbox\` for secure credential injection
 
-**Credential Injection Locations:**
+**Credential Usage by Runtime:**
+
+In cloud sandbox (\`injectCredsToSandbox\` available):
 - Environment-based credentials (oauth, kv-env, kv-header) → \`~/.creds/env\` — use \`runCommand\` with \`bash -c "source ~/.creds/env && your_command"\`
 - File-based credentials → \`~/.creds/files/{key}/{filename}\` — use file path directly in your code
+
+On desktop/local (no sandbox, \`injectCredsToSandbox\` NOT available):
+- Use \`getPlaintextCred\` to retrieve values, then pass as inline env vars in \`runCommand\`
+- Example: \`runCommand({ command: "GITHUB_TOKEN='xxx' gh repo list" })\`
+- File credentials: use \`getPlaintextCred\` to get the file path from the response state
 </credentials_management>
 
 <best_practices>

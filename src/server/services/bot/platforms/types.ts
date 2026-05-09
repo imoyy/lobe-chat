@@ -43,6 +43,8 @@ export interface FieldSchema {
   devOnly?: boolean;
   /** Enum options for select fields */
   enum?: string[];
+  /** Per-option help text rendered alongside each enum option (1:1 with `enum`). */
+  enumDescriptions?: string[];
   /** Display labels for enum options */
   enumLabels?: string[];
   /** Array item schema */
@@ -57,6 +59,12 @@ export interface FieldSchema {
   /** Nested fields (for type: 'object') */
   properties?: FieldSchema[];
   required?: boolean;
+  /**
+   * i18n key for an extra `?` tooltip rendered next to the field label. Use
+   * for "how to find this value" guidance that's too long for the inline
+   * `description` (e.g. platform-specific UI paths for fetching User IDs).
+   */
+  tooltip?: string;
   /**
    * Field type, maps to UI component:
    * - 'string' → Input
@@ -142,6 +150,19 @@ export interface PlatformClient {
   /** Create a Chat SDK adapter config for inbound message handling. */
   createAdapter: () => Record<string, any>;
 
+  /**
+   * Read the inbound message author's preferred language from the platform
+   * payload (e.g. Telegram's `from.language_code`, Discord's `user.locale`).
+   * Returns the raw platform string — caller is responsible for normalizing
+   * it against the project `Locales` set. Return `undefined` when the
+   * platform doesn't expose locale or the field is empty so the caller can
+   * fall back to the platform default.
+   *
+   * Optional — platforms that don't expose user locale (QQ / WeChat) omit
+   * this method.
+   */
+  extractAuthorLocale?: (message: Message) => string | undefined;
+
   /** Extract the chat/channel ID from a composite platformThreadId. */
   extractChatId: (platformThreadId: string) => string;
 
@@ -159,12 +180,29 @@ export interface PlatformClient {
   extractFiles?: (message: Message) => Promise<AttachmentSource[] | ExtractFilesResult | undefined>;
 
   /**
+   * Surface additional channel IDs the group allowlist (`groupAllowFrom`)
+   * should match against, beyond the inbound `thread.channelId` the router
+   * already supplies.
+   *
+   * Discord auto-creates a per-mention reply thread when the bot is
+   * @-mentioned in a parent channel; the thread's ID becomes
+   * `thread.channelId`, but operators copy the **parent** channel ID into
+   * the allowlist. Without this hook the allowlist would never match for
+   * @-mentions. The hook returns the parent so either ID lets the message
+   * through.
+   *
+   * Other platforms (Telegram chat IDs, Slack channel IDs, Feishu chat IDs)
+   * have a 1:1 mapping with what the user pastes and can omit this method.
+   */
+  extraGroupAllowlistChannels?: (platformThreadId: string) => string[];
+
+  /**
    * Transform outbound Markdown content into a format the platform can render.
    * Called before `formatReply` and `splitMessage`.
    *
-   * Platforms that don't support Markdown (e.g. WeChat, QQ) should strip
-   * formatting to plain text. Platforms with native Markdown support can
-   * omit this method — the content is passed through as-is.
+   * Platforms that don't support Markdown (e.g. QQ) should strip formatting
+   * to plain text. Platforms with native Markdown support can omit this
+   * method — the content is passed through as-is.
    */
   formatMarkdown?: (markdown: string) => string;
 
@@ -192,7 +230,21 @@ export interface PlatformClient {
    * Optional — platforms that don't support command menus can omit this.
    */
   registerBotCommands?: (
-    commands: Array<{ command: string; description: string }>,
+    commands: Array<{
+      command: string;
+      description: string;
+      /**
+       * Argument schema for platforms with structured slash commands
+       * (Discord, Slack). Without this, Discord registers as zero-arg and
+       * users have no UI to pass a value — adapters that don't support
+       * options should silently ignore this field.
+       */
+      options?: Array<{
+        description: string;
+        name: string;
+        required?: boolean;
+      }>;
+    }>,
   ) => Promise<void>;
 
   /**

@@ -1,4 +1,5 @@
 // Context Provider exports
+export { ActiveTopicDocumentContextInjector } from './ActiveTopicDocumentContextInjector';
 export { AgentBuilderContextInjector } from './AgentBuilderContextInjector';
 export {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
@@ -19,6 +20,7 @@ export { GTDPlanInjector } from './GTDPlanInjector';
 export { GTDTodoInjector } from './GTDTodoInjector';
 export { HistorySummaryProvider } from './HistorySummary';
 export { KnowledgeInjector } from './KnowledgeInjector';
+export { LocalSystemToolSnapshotInjector } from './LocalSystemToolSnapshotInjector';
 export { OnboardingActionHintInjector } from './OnboardingActionHintInjector';
 export { OnboardingContextInjector } from './OnboardingContextInjector';
 export { OnboardingSyntheticStateInjector } from './OnboardingSyntheticStateInjector';
@@ -44,6 +46,7 @@ export { TopicReferenceContextInjector } from './TopicReferenceContextInjector';
 export { UserMemoryInjector } from './UserMemoryInjector';
 
 // Re-export types
+export type { ActiveTopicDocumentContextInjectorConfig } from './ActiveTopicDocumentContextInjector';
 export type {
   AgentBuilderContext,
   AgentBuilderContextInjectorConfig,
@@ -88,6 +91,7 @@ export type { GTDPlan, GTDPlanInjectorConfig } from './GTDPlanInjector';
 export type { GTDTodoInjectorConfig, GTDTodoItem, GTDTodoList } from './GTDTodoInjector';
 export type { HistorySummaryConfig } from './HistorySummary';
 export type { KnowledgeInjectorConfig } from './KnowledgeInjector';
+export type { LocalSystemToolSnapshotInjectorConfig } from './LocalSystemToolSnapshotInjector';
 export type {
   OnboardingContext,
   OnboardingContextInjectorConfig,

@@ -146,4 +146,8 @@ apps/desktop/resources/cli-package.json
 
 # Superpowers plugin brainstorm/spec outputs (local only; do not commit)
 .superpowers/
+docs/superpowers/
 .heerogeneous-tracing
+
+# Kagura agent runtime
+.kagura/

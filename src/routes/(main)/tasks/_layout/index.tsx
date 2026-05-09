@@ -1,20 +1,15 @@
 'use client';
 
-import { TaskIdentifier } from '@lobechat/builtin-tool-task';
 import { Flexbox } from '@lobehub/ui';
 import { memo } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 
-import { useScenarioEnabledTools } from '@/hooks/useScenarioEnabledTools';
+import AgentTaskManager from '@/features/AgentTaskManager';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 
-/**
- * Layout for the cross-agent `/tasks` page. Full-width single column — no
- * right-side chat panel like `/agent/:aid/tasks/_layout` has, because this view
- * is not scoped to any single agent.
- */
 const AllTasksLayout = memo(() => {
-  useScenarioEnabledTools(TaskIdentifier);
+  const isMobile = useIsMobile();
   const serverConfigInit = useServerConfigStore((s) => s.serverConfigInit);
   const { enableAgentTask } = useServerConfigStore(featureFlagsSelectors);
 
@@ -23,8 +18,11 @@ const AllTasksLayout = memo(() => {
   }
 
   return (
-    <Flexbox flex={1} height={'100%'} width={'100%'}>
-      <Outlet />
+    <Flexbox flex={1} height={'100%'} horizontal={!isMobile} width={'100%'}>
+      <Flexbox flex={1} style={{ minWidth: 0 }}>
+        <Outlet />
+      </Flexbox>
+      {!isMobile && <AgentTaskManager />}
     </Flexbox>
   );
 });

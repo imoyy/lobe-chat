@@ -1,7 +1,7 @@
 'use client';
 
 import { isDesktop } from '@lobechat/const';
-import { type FormGroupItemType } from '@lobehub/ui';
+import { type FormGroupItemType, type FormItemProps } from '@lobehub/ui';
 import { Form, Icon, Skeleton } from '@lobehub/ui';
 import { Select, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
@@ -9,11 +9,13 @@ import isEqual from 'fast-deep-equal';
 import { Loader2Icon } from 'lucide-react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import useSWR from 'swr';
 
 import { FORM_STYLE } from '@/const/layoutTokens';
 import SettingHeader from '@/routes/(main)/settings/features/SettingHeader';
 import { autoUpdateService } from '@/services/electron/autoUpdate';
-import { useServerConfigStore } from '@/store/serverConfig';
+import { messengerService } from '@/services/messenger';
+import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 import { useUserStore } from '@/store/user';
 import { labPreferSelectors, preferenceSelectors, settingsSelectors } from '@/store/user/selectors';
 
@@ -37,19 +39,29 @@ const Page = memo(() => {
 
   const [
     isPreferenceInit,
+    enableAgentSelfIteration,
     enableInputMarkdown,
     enableGatewayMode,
-    enableHeterogeneousAgent,
+    enableMessenger,
     updateLab,
   ] = useUserStore((s) => [
     preferenceSelectors.isPreferenceInit(s),
+    labPreferSelectors.enableAgentSelfIteration(s),
     labPreferSelectors.enableInputMarkdown(s),
     labPreferSelectors.enableGatewayMode(s),
-    labPreferSelectors.enableHeterogeneousAgent(s),
+    labPreferSelectors.enableMessenger(s),
     s.updateLab,
   ]);
 
+  const { enableAgentSelfIteration: canShowAgentSelfIterationLab } =
+    useServerConfigStore(featureFlagsSelectors);
   const hasGatewayUrl = useServerConfigStore((s) => !!s.serverConfig.agentGatewayUrl);
+  // Only surface the Messenger lab when the server actually has a messenger
+  // bot configured — otherwise toggling it would do nothing useful.
+  const messengerPlatformsSWR = useSWR('messenger:availablePlatforms', () =>
+    messengerService.availablePlatforms(),
+  );
+  const hasMessengerPlatform = (messengerPlatformsSWR.data?.length ?? 0) > 0;
 
   const [channel, setChannel] = useState<UpdateChannelValue>('stable');
 
@@ -101,63 +113,82 @@ const Page = memo(() => {
     title: t('tab.advanced.updateChannel.title'),
   };
 
+  const labItems: FormItemProps[] = [
+    ...(canShowAgentSelfIterationLab
+      ? [
+          {
+            children: (
+              <Switch
+                checked={enableAgentSelfIteration}
+                loading={!isPreferenceInit}
+                onChange={(checked: boolean) => updateLab({ enableAgentSelfIteration: checked })}
+              />
+            ),
+            className: styles.labItem,
+            desc: tLabs('features.agentSelfIteration.desc'),
+            label: tLabs('features.agentSelfIteration.title'),
+            minWidth: undefined,
+          } satisfies FormItemProps,
+        ]
+      : []),
+    {
+      avatar: (
+        <img
+          alt={tLabs('features.inputMarkdown.title')}
+          src="https://github.com/user-attachments/assets/0527a966-3d95-46b4-b880-c0f3fca18f02"
+          style={{ borderRadius: 8, height: 72, marginRight: 12, objectFit: 'cover', width: 120 }}
+        />
+      ),
+      children: (
+        <Switch
+          checked={enableInputMarkdown}
+          loading={!isPreferenceInit}
+          onChange={(checked) => updateLab({ enableInputMarkdown: checked })}
+        />
+      ),
+      className: styles.labItem,
+      desc: tLabs('features.inputMarkdown.desc'),
+      label: tLabs('features.inputMarkdown.title'),
+      minWidth: undefined,
+    },
+    ...(hasGatewayUrl
+      ? [
+          {
+            children: (
+              <Switch
+                checked={enableGatewayMode}
+                loading={!isPreferenceInit}
+                onChange={(checked: boolean) => updateLab({ enableGatewayMode: checked })}
+              />
+            ),
+            className: styles.labItem,
+            desc: tLabs('features.gatewayMode.desc'),
+            label: tLabs('features.gatewayMode.title'),
+            minWidth: undefined,
+          } satisfies FormItemProps,
+        ]
+      : []),
+    ...(hasMessengerPlatform
+      ? [
+          {
+            children: (
+              <Switch
+                checked={enableMessenger}
+                loading={!isPreferenceInit}
+                onChange={(checked: boolean) => updateLab({ enableMessenger: checked })}
+              />
+            ),
+            className: styles.labItem,
+            desc: tLabs('features.messenger.desc'),
+            label: tLabs('features.messenger.title'),
+            minWidth: undefined,
+          } satisfies FormItemProps,
+        ]
+      : []),
+  ];
+
   const labsGroup: FormGroupItemType = {
-    children: [
-      {
-        avatar: (
-          <img
-            alt={tLabs('features.inputMarkdown.title')}
-            src="https://github.com/user-attachments/assets/0527a966-3d95-46b4-b880-c0f3fca18f02"
-            style={{ borderRadius: 8, height: 72, marginRight: 12, objectFit: 'cover', width: 120 }}
-          />
-        ),
-        children: (
-          <Switch
-            checked={enableInputMarkdown}
-            loading={!isPreferenceInit}
-            onChange={(checked) => updateLab({ enableInputMarkdown: checked })}
-          />
-        ),
-        className: styles.labItem,
-        desc: tLabs('features.inputMarkdown.desc'),
-        label: tLabs('features.inputMarkdown.title'),
-        minWidth: undefined,
-      },
-      ...(isDesktop
-        ? [
-            {
-              children: (
-                <Switch
-                  checked={enableHeterogeneousAgent}
-                  loading={!isPreferenceInit}
-                  onChange={(checked: boolean) => updateLab({ enableHeterogeneousAgent: checked })}
-                />
-              ),
-              className: styles.labItem,
-              desc: tLabs('features.heterogeneousAgent.desc'),
-              label: tLabs('features.heterogeneousAgent.title'),
-              minWidth: undefined,
-            },
-          ]
-        : []),
-      ...(hasGatewayUrl
-        ? [
-            {
-              children: (
-                <Switch
-                  checked={enableGatewayMode}
-                  loading={!isPreferenceInit}
-                  onChange={(checked: boolean) => updateLab({ enableGatewayMode: checked })}
-                />
-              ),
-              className: styles.labItem,
-              desc: tLabs('features.gatewayMode.desc'),
-              label: tLabs('features.gatewayMode.title'),
-              minWidth: undefined,
-            },
-          ]
-        : []),
-    ],
+    children: labItems,
     title: tLabs('title'),
   };
 

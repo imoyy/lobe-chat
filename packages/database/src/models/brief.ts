@@ -1,8 +1,18 @@
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, notInArray, sql } from 'drizzle-orm';
 
+import { agents } from '../schemas/agent';
 import type { BriefItem, NewBrief } from '../schemas/task';
-import { briefs } from '../schemas/task';
+import { briefs, tasks } from '../schemas/task';
 import type { LobeChatDatabase } from '../type';
+
+export interface UnresolvedBriefRow {
+  agentAvatar: string | null;
+  agentBackgroundColor: string | null;
+  agentRowId: string | null;
+  agentTitle: string | null;
+  brief: BriefItem;
+  taskStatus: string | null;
+}
 
 export class BriefModel {
   private readonly userId: string;
@@ -60,11 +70,26 @@ export class BriefModel {
     return { briefs: items, total: Number(countResult[0].count) };
   }
 
-  // For Daily Brief homepage — unresolved briefs sorted by priority
-  async listUnresolved(): Promise<BriefItem[]> {
+  /**
+   * Home Daily Brief feed: unresolved briefs sorted by priority, joined
+   * with the producing agent + parent task in a single SQL. Capped at 20
+   * so heavy-inbox users don't pay the full enrich cost on every home
+   * render — the rest is reachable via the task list page.
+   */
+  async listUnresolvedEnriched(options?: { limit?: number }): Promise<UnresolvedBriefRow[]> {
+    const { limit = 20 } = options ?? {};
     return this.db
-      .select()
+      .select({
+        agentAvatar: agents.avatar,
+        agentBackgroundColor: agents.backgroundColor,
+        agentRowId: agents.id,
+        agentTitle: agents.title,
+        brief: briefs,
+        taskStatus: tasks.status,
+      })
       .from(briefs)
+      .leftJoin(agents, eq(briefs.agentId, agents.id))
+      .leftJoin(tasks, eq(briefs.taskId, tasks.id))
       .where(and(eq(briefs.userId, this.userId), isNull(briefs.resolvedAt)))
       .orderBy(
         sql`CASE
@@ -73,7 +98,8 @@ export class BriefModel {
           ELSE 2
         END`,
         desc(briefs.createdAt),
-      );
+      )
+      .limit(limit);
   }
 
   async findByTaskId(taskId: string): Promise<BriefItem[]> {
@@ -82,6 +108,34 @@ export class BriefModel {
       .from(briefs)
       .where(and(eq(briefs.taskId, taskId), eq(briefs.userId, this.userId)))
       .orderBy(desc(briefs.createdAt));
+  }
+
+  // Used by heartbeat re-arm to skip rescheduling when a task is already
+  // waiting on user action (review max-iter etc). Optionally exclude brief
+  // types — heartbeat callers exclude `error` because transient errors are
+  // governed by the fuse counter, not by the existence of the error brief
+  // itself (otherwise the very first error would block all retries).
+  async hasUnresolvedUrgentByTask(
+    taskId: string,
+    options?: { excludeTypes?: string[] },
+  ): Promise<boolean> {
+    const excludeTypes = options?.excludeTypes ?? [];
+    const conditions = [
+      eq(briefs.userId, this.userId),
+      eq(briefs.taskId, taskId),
+      eq(briefs.priority, 'urgent'),
+      isNull(briefs.resolvedAt),
+    ];
+    if (excludeTypes.length > 0) {
+      conditions.push(notInArray(briefs.type, excludeTypes));
+    }
+
+    const rows = await this.db
+      .select({ id: briefs.id })
+      .from(briefs)
+      .where(and(...conditions))
+      .limit(1);
+    return rows.length > 0;
   }
 
   async findByCronJobId(cronJobId: string): Promise<BriefItem[]> {

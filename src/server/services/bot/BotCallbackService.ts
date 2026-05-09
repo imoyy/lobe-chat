@@ -9,11 +9,16 @@ import { getMessageGatewayClient } from '@/server/services/gateway/MessageGatewa
 import { SystemAgentService } from '@/server/services/systemAgent';
 
 import { AgentBridgeService } from './AgentBridgeService';
-import type { PlatformClient, PlatformMessenger, UsageStats } from './platforms';
-import { getStepReactionEmoji, platformRegistry, resolveBotProviderConfig } from './platforms';
+import type { BotReplyLocale, PlatformClient, PlatformMessenger, UsageStats } from './platforms';
+import {
+  getBotReplyLocale,
+  getStepReactionEmoji,
+  platformRegistry,
+  resolveBotProviderConfig,
+} from './platforms';
 import { clearReactionState, getReactionState, saveReactionState } from './reactionState';
 import {
-  renderError,
+  renderAgentError,
   renderFinalReply,
   renderStepProgress,
   renderStopped,
@@ -31,6 +36,7 @@ export interface BotCallbackBody {
   duration?: number;
   elapsedMs?: number;
   errorMessage?: string;
+  errorType?: string;
   executionTimeMs?: number;
   /** Hook ID from HookDispatcher (e.g. 'bot-step-progress', 'bot-completion') */
   hookId?: string;
@@ -87,10 +93,11 @@ export class BotCallbackService {
 
     const entry = platformRegistry.getPlatform(platform);
     const canEdit = entry?.supportsMessageEdit !== false;
+    const replyLocale = getBotReplyLocale(platform);
 
     if (type === 'step') {
       if (canEdit && progressMessageId && settings.displayToolCalls !== false) {
-        await this.handleStep(body, messenger, progressMessageId, client);
+        await this.handleStep(body, messenger, progressMessageId, client, replyLocale);
       }
       // Swap the user-message reaction to match the current step type (tool
       // call vs. LLM reasoning). Runs regardless of `displayToolCalls` because
@@ -111,6 +118,7 @@ export class BotCallbackService {
         messenger,
         progressMessageId ?? '',
         client,
+        replyLocale,
         charLimit,
         canEdit,
       );
@@ -177,27 +185,31 @@ export class BotCallbackService {
     messenger: PlatformMessenger,
     progressMessageId: string,
     client: PlatformClient,
+    replyLocale: BotReplyLocale,
   ): Promise<void> {
     if (!body.shouldContinue) return;
 
-    const msgBody = renderStepProgress({
-      content: body.content,
-      elapsedMs: body.elapsedMs,
-      executionTimeMs: body.executionTimeMs ?? 0,
-      lastContent: body.lastLLMContent,
-      lastToolsCalling: body.lastToolsCalling,
-      reasoning: body.reasoning,
-      stepType: body.stepType ?? ('call_llm' as const),
-      thinking: body.thinking ?? false,
-      toolsCalling: body.toolsCalling,
-      toolsResult: body.toolsResult,
-      totalCost: body.totalCost ?? 0,
-      totalInputTokens: body.totalInputTokens ?? 0,
-      totalOutputTokens: body.totalOutputTokens ?? 0,
-      totalSteps: body.totalSteps ?? 0,
-      totalTokens: body.totalTokens ?? 0,
-      totalToolCalls: body.totalToolCalls,
-    });
+    const msgBody = renderStepProgress(
+      {
+        content: body.content,
+        elapsedMs: body.elapsedMs,
+        executionTimeMs: body.executionTimeMs ?? 0,
+        lastContent: body.lastLLMContent,
+        lastToolsCalling: body.lastToolsCalling,
+        reasoning: body.reasoning,
+        stepType: body.stepType ?? ('call_llm' as const),
+        thinking: body.thinking ?? false,
+        toolsCalling: body.toolsCalling,
+        toolsResult: body.toolsResult,
+        totalCost: body.totalCost ?? 0,
+        totalInputTokens: body.totalInputTokens ?? 0,
+        totalOutputTokens: body.totalOutputTokens ?? 0,
+        totalSteps: body.totalSteps ?? 0,
+        totalTokens: body.totalTokens ?? 0,
+        totalToolCalls: body.totalToolCalls,
+      },
+      replyLocale,
+    );
 
     const stats: UsageStats = {
       elapsedMs: body.elapsedMs,
@@ -226,32 +238,27 @@ export class BotCallbackService {
     messenger: PlatformMessenger,
     progressMessageId: string,
     client: PlatformClient,
+    replyLocale: BotReplyLocale,
     charLimit?: number,
     canEdit = true,
   ): Promise<void> {
-    const { reason, lastAssistantContent, errorMessage, operationId } = body;
+    const { reason, lastAssistantContent, errorMessage, errorType, operationId } = body;
 
     if (reason === 'error') {
       log(
-        'handleCompletion: agent run failed, operationId=%s, errorMessage=%s',
+        'handleCompletion: agent run failed, operationId=%s, errorType=%s, errorMessage=%s',
         operationId,
+        errorType,
         errorMessage,
       );
-      const errorText = renderError(operationId);
-      try {
-        if (canEdit && progressMessageId) {
-          await messenger.editMessage(progressMessageId, errorText);
-        } else {
-          await messenger.createMessage(errorText);
-        }
-      } catch (error) {
-        log('handleCompletion: failed to send error message: %O', error);
-      }
+      const errorBody = renderAgentError(errorType, operationId, replyLocale);
+      const errorText = client.formatMarkdown?.(errorBody) ?? errorBody;
+      await this.deliverFirstChunk(messenger, progressMessageId, errorText, canEdit);
       return;
     }
 
     if (reason === 'interrupted') {
-      const stoppedText = renderStopped(errorMessage || 'Execution stopped.');
+      const stoppedText = renderStopped(errorMessage, replyLocale);
       try {
         await messenger.createMessage(stoppedText);
       } catch (error) {
@@ -260,7 +267,10 @@ export class BotCallbackService {
       return;
     }
 
-    if (!lastAssistantContent) {
+    // `!lastAssistantContent` lets whitespace-only strings ("\n", "  ") through;
+    // those collapse to empty text downstream and get rejected by Telegram as
+    // "message text is empty", silently losing the reply. Trim before testing.
+    if (!lastAssistantContent?.trim()) {
       log('handleCompletion: no lastAssistantContent, skipping');
       return;
     }
@@ -279,20 +289,47 @@ export class BotCallbackService {
     const finalText = client.formatReply?.(formattedBody, stats) ?? formattedBody;
     const chunks = splitMessage(finalText, charLimit);
 
-    try {
-      if (canEdit && progressMessageId) {
-        await messenger.editMessage(progressMessageId, chunks[0]);
-        for (let i = 1; i < chunks.length; i++) {
-          await messenger.createMessage(chunks[i]);
-        }
-      } else {
-        // No progress message to edit or platform doesn't support edit — send all chunks as new messages
-        for (const chunk of chunks) {
-          await messenger.createMessage(chunk);
-        }
+    if (chunks.length === 0) {
+      log('handleCompletion: all chunks empty after formatting, skipping send');
+      return;
+    }
+
+    await this.deliverFirstChunk(messenger, progressMessageId, chunks[0], canEdit);
+    // Each remaining chunk gets its own try/catch so a single transient failure
+    // (rate-limit, network blip) doesn't drop everything that follows.
+    for (let i = 1; i < chunks.length; i++) {
+      try {
+        await messenger.createMessage(chunks[i]);
+      } catch (error) {
+        log('handleCompletion: failed to send chunk %d: %O', i, error);
       }
+    }
+  }
+
+  /**
+   * Deliver the first chunk via edit when possible, else send a new message.
+   * If editing fails for any reason, fall back to createMessage so the agent's
+   * actual reply still reaches the user — silent edit failures were causing
+   * "agent ran but no reply appeared" reports on Telegram.
+   */
+  private async deliverFirstChunk(
+    messenger: PlatformMessenger,
+    progressMessageId: string,
+    text: string,
+    canEdit: boolean,
+  ): Promise<void> {
+    if (canEdit && progressMessageId) {
+      try {
+        await messenger.editMessage(progressMessageId, text);
+        return;
+      } catch (error) {
+        log('handleCompletion: editMessage failed, falling back to createMessage: %O', error);
+      }
+    }
+    try {
+      await messenger.createMessage(text);
     } catch (error) {
-      log('handleCompletion: failed to send final message: %O', error);
+      log('handleCompletion: createMessage fallback failed: %O', error);
     }
   }
 

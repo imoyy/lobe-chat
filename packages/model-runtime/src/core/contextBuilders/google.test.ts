@@ -288,6 +288,44 @@ describe('google contextBuilders', () => {
       });
     });
 
+    it('recovers functionCall.args from element[0] when arguments parse to an array', async () => {
+      // LOBE-8201 — same defense as Anthropic: prefer partial recovery from
+      // element[0] over total loss when malformed JSON parses to an array.
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const message = {
+        role: 'assistant',
+        tool_calls: [
+          {
+            function: {
+              arguments: '[{"content":"a"},{"content":"b"}]',
+              name: 'writeLocalFile',
+            },
+            id: 'call_array',
+            type: 'function',
+          },
+        ],
+      } as OpenAIChatMessage;
+
+      const converted = await buildGoogleMessage(message);
+
+      expect(converted).toEqual({
+        parts: [
+          {
+            functionCall: { args: { content: 'a' }, name: 'writeLocalFile' },
+          },
+        ],
+        role: 'model',
+      });
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('functionCall.args recovered from array'),
+        expect.objectContaining({
+          arrayLength: 2,
+          name: 'writeLocalFile',
+        }),
+      );
+      consoleWarnSpy.mockRestore();
+    });
+
     it('should correctly convert function call message with thoughtSignature', async () => {
       const message = {
         role: 'assistant',
@@ -350,7 +388,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州天气","searchEngines":["google"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_001',
                 type: 'function',
@@ -359,7 +397,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'Tool execution was aborted by user.',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_001',
           },
@@ -370,7 +408,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州 天气","searchEngines":["bing"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_002',
                 type: 'function',
@@ -379,7 +417,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'no result',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_002',
           },
@@ -406,7 +444,7 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州天气', searchEngines: ['google'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
               },
@@ -417,7 +455,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'Tool execution was aborted by user.' },
                 },
               },
@@ -429,7 +467,7 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州 天气', searchEngines: ['bing'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
               },
@@ -440,7 +478,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'no result' },
                 },
               },
@@ -464,7 +502,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州天气","searchEngines":["google"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_001',
                 thoughtSignature: existingSignature,
@@ -474,7 +512,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'Tool result',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_001',
           },
@@ -492,7 +530,7 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州天气', searchEngines: ['google'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 // Should keep existing thoughtSignature, not add magic signature
                 thoughtSignature: existingSignature,
@@ -504,7 +542,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'Tool result' },
                 },
               },
@@ -644,7 +682,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州天气","searchEngines":["google"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_001',
                 type: 'function',
@@ -653,7 +691,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'Tool execution was aborted by user.',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_001',
           },
@@ -684,7 +722,7 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州天气', searchEngines: ['google'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 // No thoughtSignature should be added when last message is user text
               },
@@ -695,7 +733,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'Tool execution was aborted by user.' },
                 },
               },
@@ -1303,7 +1341,7 @@ describe('google contextBuilders', () => {
         {
           function: {
             description: 'Search the web',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             parameters: {
               properties: { query: { type: 'string' } },
               required: ['query'],
@@ -1327,7 +1365,7 @@ describe('google contextBuilders', () => {
         {
           function: {
             description: 'Search the web (duplicate)',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             parameters: {
               properties: { query: { type: 'string' } },
               required: ['query'],
@@ -1342,9 +1380,7 @@ describe('google contextBuilders', () => {
 
       expect(googleTools).toHaveLength(1);
       expect(googleTools![0].functionDeclarations).toHaveLength(2);
-      expect(googleTools![0].functionDeclarations![0].name).toBe(
-        'lobe-web-browsing____search____builtin',
-      );
+      expect(googleTools![0].functionDeclarations![0].name).toBe('lobe-web-browsing____search');
       expect(googleTools![0].functionDeclarations![0].description).toBe('Search the web');
       expect(googleTools![0].functionDeclarations![1].name).toBe('get_weather');
     });

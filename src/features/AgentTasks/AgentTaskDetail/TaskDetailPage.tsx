@@ -3,14 +3,18 @@ import { memo, useEffect } from 'react';
 
 import AutoSaveHint from '@/components/Editor/AutoSaveHint';
 import Loading from '@/components/Loading/BrandTextLoading';
+import DocumentPreviewModal from '@/features/DocumentModal/Preview';
 import NavHeader from '@/features/NavHeader';
 import ToggleRightPanelButton from '@/features/RightPanel/ToggleRightPanelButton';
 import WideScreenContainer from '@/features/WideScreenContainer';
+import { useGlobalStore } from '@/store/global';
+import { systemStatusSelectors } from '@/store/global/selectors';
 import { useTaskStore } from '@/store/task';
 import { taskDetailSelectors } from '@/store/task/selectors';
 
 import Breadcrumb from '../shared/Breadcrumb';
 import TaskActivities from './TaskActivities';
+import TaskArtifacts from './TaskArtifacts';
 import TaskDetailAssignee from './TaskDetailAssignee';
 import TaskDetailHeaderActions from './TaskDetailHeaderActions';
 import TaskDetailRunPauseAction from './TaskDetailRunPauseAction';
@@ -23,15 +27,18 @@ import TaskSubtasks from './TaskSubtasks';
 import TopicChatDrawer from './TopicChatDrawer';
 
 interface TaskDetailPageProps {
-  agentId: string;
   taskId: string;
 }
 
-const TaskDetailPage = memo<TaskDetailPageProps>(({ agentId, taskId }) => {
+const TaskDetailPage = memo<TaskDetailPageProps>(({ taskId }) => {
   const setActiveTaskId = useTaskStore((s) => s.setActiveTaskId);
   const useFetchTaskDetail = useTaskStore((s) => s.useFetchTaskDetail);
   const isLoading = useTaskStore(taskDetailSelectors.isTaskDetailLoading);
   const saveStatus = useTaskStore(taskDetailSelectors.taskSaveStatus);
+  const [showTaskAgentPanel, toggleTaskAgentPanel] = useGlobalStore((s) => [
+    systemStatusSelectors.showTaskAgentPanel(s),
+    s.toggleTaskAgentPanel,
+  ]);
 
   useEffect(() => {
     setActiveTaskId(taskId);
@@ -43,13 +50,19 @@ const TaskDetailPage = memo<TaskDetailPageProps>(({ agentId, taskId }) => {
   return (
     <Flexbox flex={1} height={'100%'} style={{ minHeight: 0 }}>
       <NavHeader
-        right={<ToggleRightPanelButton hideWhenExpanded />}
         left={
           <>
-            <Breadcrumb agentId={agentId} taskId={taskId} />
+            <Breadcrumb taskId={taskId} />
             <TaskDetailHeaderActions />
             {saveStatus === 'saving' ? <AutoSaveHint saveStatus={saveStatus} /> : undefined}
           </>
+        }
+        right={
+          <ToggleRightPanelButton
+            hideWhenExpanded
+            expand={showTaskAgentPanel}
+            onToggle={() => toggleTaskAgentPanel()}
+          />
         }
         styles={{
           left: {
@@ -81,6 +94,7 @@ const TaskDetailPage = memo<TaskDetailPageProps>(({ agentId, taskId }) => {
               <Flexbox gap={24} style={{ paddingBottom: 120 }}>
                 <TaskInstruction />
                 <TaskSubtasks />
+                <TaskArtifacts />
                 <TaskActivities />
               </Flexbox>
             </>
@@ -88,6 +102,7 @@ const TaskDetailPage = memo<TaskDetailPageProps>(({ agentId, taskId }) => {
         </WideScreenContainer>
       </Flexbox>
       <TopicChatDrawer />
+      <DocumentPreviewModal />
     </Flexbox>
   );
 });

@@ -5,12 +5,18 @@ import type { ChatTopic } from '../topic';
  * Application context for message storage
  */
 export interface ExecAgentAppContext {
+  /** Optional default assignee candidate for task manager prompts */
+  defaultTaskAssigneeAgentId?: string;
+  /** Current document ID for page-scoped conversations */
+  documentId?: string | null;
   /** Group ID for group chat */
   groupId?: string | null;
   /** Scope identifier */
   scope?: string | null;
   /** Session ID */
   sessionId?: string;
+  /** Current task identifier when executing from a task detail surface */
+  taskId?: string | null;
   /** Thread ID for threaded conversations */
   threadId?: string | null;
   /** Topic ID */
@@ -188,6 +194,8 @@ export interface ExecSubAgentTaskParams {
   instruction: string;
   /** The parent message ID (Supervisor's tool call message or task message) */
   parentMessageId: string;
+  /** Parent operation ID for dispatching callAgent hooks */
+  parentOperationId?: string;
   /** Timeout in milliseconds (optional) */
   timeout?: number;
   /** Task title (shown in UI, used as thread title) */

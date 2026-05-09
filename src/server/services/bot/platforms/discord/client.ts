@@ -31,6 +31,14 @@ const DEFAULT_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours
 export interface GatewayListenerOptions {
   durationMs?: number;
   waitUntil?: (task: Promise<any>) => void;
+  /**
+   * Override the URL the Gateway listener forwards events to. Defaults to
+   * `${appUrl}/api/agent/webhooks/discord/${applicationId}` (the per-agent
+   * bot path). Set when the same gateway connection should drive a different
+   * surface — e.g. the LobeHub Messenger forwards to
+   * `/api/agent/messenger/webhooks/discord`.
+   */
+  webhookUrl?: string;
 }
 
 function extractChannelId(platformThreadId: string): string {
@@ -116,7 +124,9 @@ class DiscordGatewayClient implements PlatformClient {
       const discordAdapter = (bot as any).adapters.get('discord') as DiscordAdapter;
       const waitUntil = options?.waitUntil ?? ((task: Promise<any>) => task.catch(() => {}));
 
-      const webhookUrl = `${(this.context.appUrl || '').trim()}/api/agent/webhooks/discord/${this.applicationId}`;
+      const webhookUrl =
+        options?.webhookUrl ??
+        `${(this.context.appUrl || '').trim()}/api/agent/webhooks/discord/${this.applicationId}`;
 
       await discordAdapter.startGatewayListener(
         { waitUntil },
@@ -125,7 +135,15 @@ class DiscordGatewayClient implements PlatformClient {
         webhookUrl,
       );
 
-      if (!options) {
+      // Auto-refresh by default. Skip ONLY when an explicit `waitUntil` is
+      // passed (the serverless / GatewayManager call sites manage their own
+      // lifecycle). Persist `webhookUrl` across the refresh cycle so callers
+      // that overrode the forwarding target keep their override.
+      const shouldAutoRefresh = !options?.waitUntil;
+      if (shouldAutoRefresh) {
+        const refreshOptions: GatewayListenerOptions | undefined = options?.webhookUrl
+          ? { webhookUrl: options.webhookUrl }
+          : undefined;
         this.refreshTimer = setTimeout(() => {
           if (this.abort.signal.aborted || this.stopped) return;
 
@@ -135,7 +153,7 @@ class DiscordGatewayClient implements PlatformClient {
             durationMs / 3_600_000,
           );
           this.abort.abort();
-          this.start().catch((err) => {
+          this.start(refreshOptions).catch((err) => {
             log('Failed to refresh DiscordBot appId=%s: %O', this.applicationId, err);
           });
         }, durationMs);
@@ -302,6 +320,40 @@ class DiscordGatewayClient implements PlatformClient {
     return extractChannelId(platformThreadId);
   }
 
+  /**
+   * Resolve the message sender's preferred Discord locale.
+   *
+   * Discord intentionally does **not** include `User.locale` in MESSAGE_CREATE
+   * Gateway events: the field is only populated by `GET /users/@me` for the
+   * authenticated user and is gated behind the `identify` OAuth2 scope. There
+   * is no member-, presence-, or guild-membership event that surfaces another
+   * user's preferred language either. So for DMs and group `@mentions` we
+   * cannot detect locale at all — the router will fall back to the channel's
+   * platform default.
+   *
+   * The two fields we *can* read both live on `INTERACTION_CREATE` payloads
+   * (slash commands, message components):
+   * - `raw.locale` — the invoking user's client locale (`pt-BR`, `zh-CN`, …)
+   * - `raw.guild_locale` — the guild's `preferred_locale`; used as a soft
+   *   fallback for community guilds when the user-level field is missing
+   *
+   * Returns `undefined` outside those interaction paths so the router can
+   * apply the platform default.
+   */
+  extractAuthorLocale(message: Message): string | undefined {
+    const raw = (message as any).raw as Record<string, any> | undefined;
+    if (!raw) return undefined;
+    const interactionLocale = raw.locale;
+    if (typeof interactionLocale === 'string' && interactionLocale.length > 0) {
+      return interactionLocale;
+    }
+    const guildLocale = raw.guild_locale;
+    if (typeof guildLocale === 'string' && guildLocale.length > 0) {
+      return guildLocale;
+    }
+    return undefined;
+  }
+
   formatReply(body: string, stats?: UsageStats): string {
     if (!stats || !this.config.settings?.showUsageStats) return body;
     return `${body}\n\n-# ${formatUsageStats(stats)}`;
@@ -325,6 +377,24 @@ class DiscordGatewayClient implements PlatformClient {
     return threadId;
   }
 
+  /**
+   * Surface the parent channel for the group allowlist. When the bot is
+   * @-mentioned in a parent channel, Discord spawns an auto-reply thread
+   * and `thread.channelId` resolves to the **thread** (segment 3 of the
+   * composite). Operators, however, paste the *parent* channel ID
+   * (segment 2 — what Discord's "Copy Channel ID" returns). Returning the
+   * parent here lets `shouldHandleGroup` accept either form.
+   */
+  extraGroupAllowlistChannels(platformThreadId: string): string[] {
+    const parts = platformThreadId.split(':');
+    // Format: discord:guildId:channelId[:discordThreadId]
+    // Only when there's a thread segment is the parent distinct from
+    // `thread.channelId` (which already maps to the thread). For
+    // top-level channels the router already supplies `parts[2]`.
+    if (parts.length === 4 && parts[2]) return [parts[2]];
+    return [];
+  }
+
   sanitizeUserInput(text: string): string {
     return text.replaceAll(new RegExp(`<@!?${this.applicationId}>\\s*`, 'g'), '').trim();
   }
@@ -334,7 +404,11 @@ class DiscordGatewayClient implements PlatformClient {
   }
 
   async registerBotCommands(
-    commands: Array<{ command: string; description: string }>,
+    commands: Array<{
+      command: string;
+      description: string;
+      options?: Array<{ description: string; name: string; required?: boolean }>;
+    }>,
   ): Promise<void> {
     await this.discord.registerCommands(this.applicationId, commands);
     log('DiscordBot appId=%s registered %d commands', this.applicationId, commands.length);

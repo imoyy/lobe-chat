@@ -1,6 +1,7 @@
 import { type BuiltinAgentSlug } from '@lobechat/builtin-agents';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
+import { TaskIdentifier } from '@lobechat/builtin-tool-task';
 import { type LobeToolManifest } from '@lobechat/context-engine';
 import {
   type ChatCompletionTool,
@@ -161,7 +162,14 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
       log('disableTools is true, returning empty plugins');
       return [];
     }
-    return isSubTask ? pluginIds.filter((id) => id !== 'lobe-gtd') : pluginIds;
+
+    let nextPluginIds = pluginIds;
+
+    if (ctx.scope !== 'page') {
+      nextPluginIds = nextPluginIds.filter((id) => id !== PageAgentIdentifier);
+    }
+
+    return isSubTask ? nextPluginIds.filter((id) => id !== 'lobe-gtd') : nextPluginIds;
   };
 
   const agentStoreState = getAgentStoreState();
@@ -288,6 +296,31 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
       };
     }
 
+    if (ctx.scope === 'task') {
+      const taskAgentPlugins = finalPlugins.includes(TaskIdentifier)
+        ? finalPlugins
+        : [TaskIdentifier, ...finalPlugins];
+      const taskAgentRuntime = getAgentRuntimeConfig(BUILTIN_AGENT_SLUGS.taskAgent, {});
+      const taskAgentSystemRole = taskAgentRuntime?.systemRole || '';
+      const mergedSystemRole = taskAgentSystemRole
+        ? systemRoleWithLocale
+          ? `${systemRoleWithLocale}\n\n${taskAgentSystemRole}`
+          : taskAgentSystemRole
+        : systemRoleWithLocale || '';
+
+      finalAgentConfig = {
+        ...finalAgentConfig,
+        systemRole: mergedSystemRole,
+      };
+
+      return {
+        agentConfig: finalAgentConfig,
+        chatConfig: finalChatConfig,
+        isBuiltinAgent: false,
+        plugins: applyPluginFilters(taskAgentPlugins),
+      };
+    }
+
     // Not in page scope - return standard config
     return {
       agentConfig: finalAgentConfig,
@@ -397,6 +430,21 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
       ...resolvedChatConfig,
       enableHistoryCount: false,
     };
+  }
+
+  if (ctx.scope === 'task' && slug !== BUILTIN_AGENT_SLUGS.taskAgent) {
+    if (!finalPlugins.includes(TaskIdentifier)) {
+      finalPlugins = [TaskIdentifier, ...finalPlugins];
+    }
+
+    const taskAgentRuntime = getAgentRuntimeConfig(BUILTIN_AGENT_SLUGS.taskAgent, {});
+    const taskAgentSystemRole = taskAgentRuntime?.systemRole || '';
+
+    if (taskAgentSystemRole) {
+      resolvedSystemRole = resolvedSystemRole
+        ? `${resolvedSystemRole}\n\n${taskAgentSystemRole}`
+        : taskAgentSystemRole;
+    }
   }
 
   // Merge runtime systemRole into agent config

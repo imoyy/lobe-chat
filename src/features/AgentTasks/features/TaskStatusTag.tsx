@@ -7,9 +7,10 @@ import {
   CircleCheck,
   CircleDashed,
   CircleDot,
-  CirclePause,
   CircleSlash,
   CircleX,
+  Clock,
+  HandIcon,
   Loader2Icon,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -18,6 +19,8 @@ import { useTranslation } from 'react-i18next';
 
 import { useTaskStore } from '@/store/task';
 
+import { renderMenuExtra } from './menuExtra';
+
 interface StatusMeta {
   color: string;
   icon: LucideIcon;
@@ -25,7 +28,7 @@ interface StatusMeta {
   labelKey: string;
 }
 
-const STATUS_META: Record<TaskStatus, StatusMeta> = {
+export const STATUS_META: Record<TaskStatus, StatusMeta> = {
   backlog: {
     color: cssVar.colorTextQuaternary,
     icon: CircleDashed,
@@ -51,20 +54,31 @@ const STATUS_META: Record<TaskStatus, StatusMeta> = {
     labelKey: 'status.failed',
   },
   paused: {
-    color: cssVar.colorWarning,
-    icon: CirclePause,
-    label: 'Paused',
+    color: cssVar.colorInfo,
+    icon: HandIcon,
+    label: 'Pending review',
     labelKey: 'status.paused',
   },
   running: {
-    color: cssVar.colorInfo,
+    color: cssVar.colorWarning,
     icon: CircleDot,
     label: 'Running',
     labelKey: 'status.running',
   },
+  scheduled: {
+    color: cssVar.colorWarning,
+    icon: Clock,
+    label: 'Scheduled',
+    labelKey: 'status.scheduled',
+  },
 };
 
-const USER_SELECTABLE_STATUSES: TaskStatus[] = ['backlog', 'completed', 'canceled'];
+export const USER_SELECTABLE_STATUSES: TaskStatus[] = [
+  'backlog',
+  'paused',
+  'completed',
+  'canceled',
+];
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   trigger: css`
@@ -118,9 +132,11 @@ const TaskStatusTag = memo<TaskStatusTagProps>(
 
     const menuItems = useMemo<MenuProps['items']>(
       () =>
-        USER_SELECTABLE_STATUSES.map((key) => {
+        USER_SELECTABLE_STATUSES.map((key, index) => {
           const statusMeta = STATUS_META[key];
+          const isCurrent = key === displayStatus;
           return {
+            extra: renderMenuExtra(String(index + 1), isCurrent),
             icon: <Icon color={statusMeta.color} icon={statusMeta.icon} size={16} />,
             key,
             label: t(`taskDetail.${statusMeta.labelKey}`, { defaultValue: statusMeta.label }),
@@ -130,7 +146,7 @@ const TaskStatusTag = memo<TaskStatusTagProps>(
             },
           };
         }),
-      [handleStatusChange, t],
+      [displayStatus, handleStatusChange, t],
     );
 
     const triggerNode =
