@@ -478,7 +478,7 @@ export class BotMessageRouter {
     const { agentId, applicationId, platform, userId } = info;
     const bridge = new AgentBridgeService(serverDB, userId);
     const charLimit = (info.settings?.charLimit as number) || undefined;
-    const displayToolCalls = info.settings?.displayToolCalls !== false;
+    const displayToolCalls = info.settings?.displayToolCalls === true;
     const dmSettings: DmSettings = extractDmSettings(info.settings);
     const groupSettings: GroupSettings = extractGroupSettings(info.settings);
     const userAllowlist: UserAllowlist = extractUserAllowlist(info.settings);
@@ -872,10 +872,18 @@ export class BotMessageRouter {
         (context?.skipped?.length ?? 0) + 1,
         ((merged as any).attachments as unknown[] | undefined)?.length ?? 0,
       );
+      const senderExternalUserId = merged.author?.userId ?? '';
+      const isOwner = !!operatorUserId && senderExternalUserId === operatorUserId;
       try {
         await bridge.handleMention(thread, merged, {
           agentId,
-          botContext: { applicationId, platform, platformThreadId: thread.id },
+          botContext: {
+            applicationId,
+            isOwner,
+            platform,
+            platformThreadId: thread.id,
+            senderExternalUserId,
+          },
           charLimit,
           client,
           displayToolCalls,
@@ -986,10 +994,18 @@ export class BotMessageRouter {
         ((merged as any).attachments as unknown[] | undefined)?.length ?? 0,
       );
 
+      const senderExternalUserId = merged.author?.userId ?? '';
+      const isOwner = !!operatorUserId && senderExternalUserId === operatorUserId;
       try {
         await bridge.handleSubscribedMessage(thread, merged, {
           agentId,
-          botContext: { applicationId, platform, platformThreadId: thread.id },
+          botContext: {
+            applicationId,
+            isOwner,
+            platform,
+            platformThreadId: thread.id,
+            senderExternalUserId,
+          },
           charLimit,
           client,
           displayToolCalls,
@@ -1109,10 +1125,18 @@ export class BotMessageRouter {
           ((merged as any).attachments as unknown[] | undefined)?.length ?? 0,
         );
 
+        const senderExternalUserId = merged.author?.userId ?? '';
+        const isOwner = !!operatorUserId && senderExternalUserId === operatorUserId;
         try {
           await bridge.handleMention(thread, merged, {
             agentId,
-            botContext: { applicationId, platform, platformThreadId: thread.id },
+            botContext: {
+              applicationId,
+              isOwner,
+              platform,
+              platformThreadId: thread.id,
+              senderExternalUserId,
+            },
             charLimit,
             client,
             displayToolCalls,
